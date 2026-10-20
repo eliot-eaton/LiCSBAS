@@ -926,6 +926,12 @@ def main(argv=None):
 
 
     #%% Add info and close
+    if 'tsstd' in cumh5:
+        cumfh5.create_dataset(
+            'tsstd',
+            data=cumh5['tsstd'][:],
+            compression=compress
+        )
     cumfh5.create_dataset('filtwidth_yr', data=filtwidth_yr)
     cumfh5.create_dataset('filtwidth_km', data=filtwidth_km)
     cumfh5.create_dataset('deramp_flag', data=deg_ramp)

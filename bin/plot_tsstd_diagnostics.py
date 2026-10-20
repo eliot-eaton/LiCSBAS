@@ -154,6 +154,42 @@ def main():
                     print(f'Saved {extra_path}')
                 else:
                     print('Existing CSVs lack new covariance/weight columns; rerun Step 13 with updated snippet.')
+                if 'max_cm_diag_svd' in diag.dtype.names:
+                    x = diag['max_cm_diag']
+                    y = diag['max_cm_diag_svd']
+                    ratio = np.divide(x, y, out=np.full_like(x, np.nan), where=y > 0)
+                    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+                    ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+                    axes[0].scatter(x[ok], y[ok], s=15, alpha=0.5)
+                    if ok.any():
+                        lo, hi = min(x[ok].min(), y[ok].min()), max(x[ok].max(), y[ok].max())
+                        axes[0].plot([lo, hi], [lo, hi], 'k--')
+                    axes[0].set(xscale='log', yscale='log',
+                                xlabel='Normal-matrix max increment variance (mm²)',
+                                ylabel='SVD max increment variance (mm²)')
+                    ok = np.isfinite(ratio) & (ratio > 0)
+                    axes[1].scatter(diag['max_tsstd_mm'][ok], ratio[ok], s=15, alpha=0.5)
+                    axes[1].axhline(1, color='k', linestyle='--')
+                    axes[1].set(xscale='log', yscale='log',
+                                xlabel='Maximum pixel tsstd (mm)',
+                                ylabel='Normal / SVD variance')
+                    for ax in axes:
+                        ax.grid(alpha=0.3)
+                    fig.savefig(out / 'tsstd_pinv_comparison.png', dpi=200)
+                    plt.close(fig)
+                    print(f"Saved {out / 'tsstd_pinv_comparison.png'}")
+                    for label, selection in [
+                        ('Ordinary', (diag['max_tsstd_mm'] >= 2) & (diag['max_tsstd_mm'] <= 10)),
+                        ('Extreme', diag['max_tsstd_mm'] > 1000)
+                    ]:
+                        r = ratio[selection & np.isfinite(ratio) & (ratio > 0)]
+                        if r.size:
+                            print(f'{label}: n={r.size}, median normal/SVD variance ratio={np.median(r):.6g}')
+                    if 'rank_svd_cutoff' in diag.dtype.names:
+                        print('Different effective covariance ranks:',
+                              np.count_nonzero(diag['rank_svd_cutoff'] != diag['rank_normal_cutoff']))
+                else:
+                    print('SVD comparison columns missing; update diagnostic snippet and rerun Step 13.')
                 print(f'Saved {path3} from {len(diag)} sampled pixels')
                 for label, selector in [
                     ('Ordinary uncertainty (2-10 mm)', (diag['max_tsstd_mm'] >= 2) & (diag['max_tsstd_mm'] <= 10)),

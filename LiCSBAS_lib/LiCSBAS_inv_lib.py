@@ -753,55 +753,74 @@ def wls_nsbas_with_error(i, use_weights=True):
         print(f'  Running {i:6}/{unw_tmp.shape[1]:6}th point...', flush=True)
     unw_col = unw_tmp[:, i]
     m = mask[:, i]
+        # Number of displacement increments
+    n_inc = Gall.shape[1] - 2
+
+    # Default outputs for failed pixels
+    X = np.full(Gall.shape[1], np.nan, dtype=np.float32)
+    ts_std = np.full(n_inc, np.nan, dtype=np.float32)
+
+    # --------------------------------------------------
+    # 1. Solve the inversion (weighted if requested)
+    # --------------------------------------------------
     try:
         if use_weights:
-            # --- Weighted system ---
-            w = 1.0 / np.sqrt(np.float64(var_tmp[:, i]))
+            w = 1.0 / np.sqrt(
+                np.asarray(var_tmp[:, i], dtype=np.float64)
+            )
             Gm = Gall[m] * w[m, np.newaxis]
             dm = unw_col[m] * w[m]
         else:
-            # --- Unweighted system ---
             Gm = Gall[m]
             dm = unw_col[m]
-        n_obs = Gm.shape[0]
-        n_param = Gm.shape[1]
-        n_im = n_param - 1
-        # --- Solve LS ---
-        X = np.linalg.lstsq(Gm, dm, rcond=None)[0]
-        # --- Residuals ---
-        r = dm - Gm @ X
-        # --- Degrees of freedom ---
-        dof = max(n_obs - n_param, 1)
-        # --- Variance factor ---
-        sigma0_sq = (r @ r) / dof
-        # --- Covariance of parameters ---
-        GTG = Gm.T @ Gm
-        try:
-            Cx = np.linalg.inv(GTG)
-        except:
-            Cx = np.linalg.pinv(GTG, rcond=1e-10)
-        # --- Scale with residual variance ---
-        Cx *= sigma0_sq
-        # --- Extract increment covariance ---
-        Cm = Cx[:n_im-1, :n_im-1]
-        # --- Time integration matrix ---
-        A = np.tril(np.ones((n_im-1, n_im-1)), dtype=np.float64)
-        # but let's not propagate the extended error due to trend estimation
-        #gap_mask = np.all(G == 0, axis=0) # but can i directly access G?
-        n_inc = n_im - 1
-        n_ifg = Gall.shape[0] - n_im
 
+        if not np.all(np.isfinite(Gm)) or not np.all(np.isfinite(dm)):
+            raise ValueError("Non-finite inversion inputs")
+
+        X = np.linalg.lstsq(Gm, dm, rcond=None)[0]
+
+    except Exception as e:
+        if i < 10:
+            print(f"Inversion failed at pixel {i}: {e}", flush=True)
+        return X, ts_std
+
+    # --------------------------------------------------
+    # 2. Estimate uncertainty separately
+    # --------------------------------------------------
+    try:
+        n_obs, n_param = Gm.shape
+
+        # Weighted residuals
+        r = dm - Gm @ X
+        dof = max(n_obs - n_param, 1)
+        sigma0_sq = (r @ r) / dof
+
+        # Parameter covariance
+        GTG = Gm.T @ Gm
+        Cx = np.linalg.pinv(GTG, rcond=1e-10)
+        Cx *= sigma0_sq
+
+        # Displacement increment covariance
+        Cm = Cx[:n_inc, :n_inc]
+
+        # Propagate to cumulative displacement
+        A = np.tril(np.ones((n_inc, n_inc), dtype=np.float64))
+
+        # Identify increments not spanned by interferograms
+        n_im = n_inc + 1
+        n_ifg = Gall.shape[0] - n_im
         G_inc = Gall[:n_ifg, :n_inc]
+
         gap_mask = np.all(G_inc == 0, axis=0)
-        # gap_mask = np.all(G_inc == 0, axis=0)
-        # gap_mask = np.all(np.abs(G_inc) < 1e-10, axis=0) # should be safer due to floating point..
         A[:, gap_mask] = 0
-        # --- Propagate covariance ---
+
         Cu = A @ Cm @ A.T
-        ts_std = np.sqrt(np.diag(Cu))
-    except Exception:
-        X = np.full(Gall.shape[1], np.nan, dtype=np.float32)
-        ts_std = np.full(n_im-1, np.nan, dtype=np.float32)
+        ts_std = np.sqrt(np.maximum(np.diag(Cu), 0))
+
+    except Exception as e:
+        if i < 10:
+            print(f"Uncertainty failed at pixel {i}: {e}", flush=True)
+
     return X, ts_std
 
 

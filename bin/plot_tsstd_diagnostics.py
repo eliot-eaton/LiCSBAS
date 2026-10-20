@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Temporal, distributional, and spatial diagnostics for LiCSBAS tsstd."""
 import argparse
+import glob
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', default='TS_new_GEOCml1/cum.h5', help='Input LiCSBAS cum.h5')
     parser.add_argument('--output-dir', default='.', help='Directory for output PNGs')
+    parser.add_argument('--matrix-glob', default='tsstd_matrix_diagnostics_*.csv', help='Optional inversion matrix diagnostics CSV glob')
     args = parser.parse_args()
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -92,6 +94,49 @@ def main():
     path2 = out / 'tsstd_spatial_comparison.png'
     fig.savefig(path2, dpi=200)
     plt.close(fig)
+    # Optional: compare singular values and residual variance for sampled pixels.
+    files = sorted(glob.glob(args.matrix_glob))
+    if files:
+        arrays = []
+        for file in files:
+            data = np.genfromtxt(file, delimiter=',', names=True, ndmin=1)
+            if data.size:
+                arrays.append(data)
+        if arrays:
+            diag = np.concatenate(arrays)
+            good = np.isfinite(diag['max_tsstd_mm']) & (diag['max_tsstd_mm'] > 0)
+            diag = diag[good]
+            if len(diag):
+                fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+                for ax, field, title in zip(
+                    axes,
+                    ['sigma0_sq', 'condition', 'max_cx_diag'],
+                    ['Weighted residual variance factor', 'Design-matrix condition number', 'Largest parameter variance']
+                ):
+                    x = diag['max_tsstd_mm']
+                    y = diag[field]
+                    ok = (np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0))
+                    ax.scatter(x[ok], y[ok], s=15, alpha=0.55)
+                    ax.set_xscale('log')
+                    ax.set_yscale('log')
+                    ax.set_xlabel('Maximum pixel tsstd (mm)')
+                    ax.set_title(title)
+                    ax.grid(alpha=0.3)
+                path3 = out / 'tsstd_matrix_diagnostics.png'
+                fig.savefig(path3, dpi=200)
+                plt.close(fig)
+                print(f'Saved {path3} from {len(diag)} sampled pixels')
+                for label, selector in [
+                    ('Ordinary uncertainty (2-10 mm)', (diag['max_tsstd_mm'] >= 2) & (diag['max_tsstd_mm'] <= 10)),
+                    ('Extreme uncertainty (>1000 mm)', diag['max_tsstd_mm'] > 1000),
+                ]:
+                    group = diag[selector]
+                    if len(group):
+                        print(f"{label}: n={len(group)}, median sigma0_sq={np.median(group['sigma0_sq']):.4g}, median condition={np.median(group['condition']):.4g}, median rank={np.median(group['rank']):.0f}/{np.median(group['n_param']):.0f}")
+    else:
+        print('No matrix diagnostic CSVs found; matrix comparison skipped.')
+        print('To produce them, instrument wls_nsbas_with_error() and rerun inversion.')
+
     print(f'Saved {path1}')
     print(f'Saved {path2}')
     print('Spatial map dates:', ', '.join(dates[k].strftime('%Y%m%d') for k in indices))

@@ -820,6 +820,26 @@ def wls_nsbas_with_error(i, use_weights=True):
     except Exception as e:
         if i < 10:
             print(f"Uncertainty failed at pixel {i}: {e}", flush=True)
+    # Record weighted design matrix Gm or the residual variance factor. 
+    # So we can plot these quantities and  analyse them
+    # Writes a small sample per worker, avoiding shared-file writes.
+    if np.all(np.isfinite(ts_std)) and np.any(ts_std > 0):
+        peak_std = float(np.max(ts_std))
+        # Deterministic sampling to limit I/O; adjust modulus if needed.
+        if (i % 500 == 0) and (2 <= peak_std <= 10 or peak_std >= 1000):
+            singular = np.linalg.svd(Gm, compute_uv=False)
+            positive = singular[singular > 0]
+            condition = (float(singular[0] / singular[-1])
+                        if singular[-1] > 0 else float('inf'))
+            rank = int(np.linalg.matrix_rank(Gm))
+            import os
+            diagnostic_path = f'tsstd_matrix_diagnostics_{os.getpid()}.csv'
+            if not os.path.exists(diagnostic_path):
+                with open(diagnostic_path, 'w') as fh:
+                    fh.write('pixel,max_tsstd_mm,sigma0_sq,smax,smin,condition,rank,n_param,n_obs,max_cx_diag\n')
+            with open(diagnostic_path, 'a') as fh:
+                fh.write(f'{i},{peak_std},{sigma0_sq},{singular[0]},{singular[-1]},'
+                        f'{condition},{rank},{n_param},{n_obs},{np.max(np.diag(Cx))}\n')
 
     return X, ts_std
 

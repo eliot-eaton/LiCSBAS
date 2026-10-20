@@ -741,126 +741,167 @@ def wls_nsbas(i):
         X = np.zeros((Gall.shape[1]), dtype=np.float32)*np.nan
     return X
 
-
 def wls_nsbas_with_error(i, use_weights=True):
-    """ Update 2026/05: added residuals to the error calc
-    Returns:
-        X       : NSBAS solution vector
-                  [increments (n_im-1), velocity, constant]
-        ts_std  : Standard deviation per epoch (n_im-1)
     """
+    NSBAS WLS inversion with observational-noise uncertainty propagation.
+
+    Returns
+    -------
+    X : ndarray
+        NSBAS solution [displacement increments, velocity, intercept].
+    ts_std : ndarray
+        Standard deviation of cumulative displacement at each epoch
+        after the reference epoch.
+
+    Assumptions
+    -----------
+    - Interferogram rows precede NSBAS constraint rows in Gall.
+    - var_tmp contains interferogram measurement variances.
+    - Interferogram errors are independent.
+    - The NSBAS regularisation is deterministic.
+    - The supplied variances are in squared displacement units if
+      ts_std is to be interpreted in displacement units.
+
+    This estimates measurement-noise propagation through the
+    regularised estimator. It does not include regularisation bias.
+    """
+
     if np.mod(i, 1000) == 0:
-        print(f'  Running {i:6}/{unw_tmp.shape[1]:6}th point...', flush=True)
+        print(
+            f"  Running {i:6}/{unw_tmp.shape[1]:6}th point...",
+            flush=True
+        )
+
     unw_col = unw_tmp[:, i]
     m = mask[:, i]
-        # Number of displacement increments
-    n_inc = Gall.shape[1] - 2
 
-    # Default outputs for failed pixels
+    n_inc = Gall.shape[1] - 2
+    n_im = n_inc + 1
+    n_ifg = Gall.shape[0] - n_im
+
     X = np.full(Gall.shape[1], np.nan, dtype=np.float32)
     ts_std = np.full(n_inc, np.nan, dtype=np.float32)
 
     # --------------------------------------------------
-    # 1. Solve the inversion (weighted if requested)
+    # 1. WLS inversion: unchanged
     # --------------------------------------------------
     try:
         if use_weights:
-            w = 1.0 / np.sqrt(
-                np.asarray(var_tmp[:, i], dtype=np.float64)
+            variance = np.asarray(
+                var_tmp[:, i], dtype=np.float64
             )
+
+            w = 1.0 / np.sqrt(variance)
+
             Gm = Gall[m] * w[m, np.newaxis]
             dm = unw_col[m] * w[m]
+
         else:
             Gm = Gall[m]
             dm = unw_col[m]
 
-        if not np.all(np.isfinite(Gm)) or not np.all(np.isfinite(dm)):
-            raise ValueError("Non-finite inversion inputs")
+        if not np.all(np.isfinite(Gm)):
+            raise ValueError("Non-finite design matrix")
+
+        if not np.all(np.isfinite(dm)):
+            raise ValueError("Non-finite observations")
 
         X = np.linalg.lstsq(Gm, dm, rcond=None)[0]
 
     except Exception as e:
         if i < 10:
-            print(f"Inversion failed at pixel {i}: {e}", flush=True)
+            print(
+                f"Inversion failed at pixel {i}: {e}",
+                flush=True
+            )
+
         return X, ts_std
 
     # --------------------------------------------------
-    # 2. Estimate uncertainty separately
+    # 2. Observational-noise covariance
     # --------------------------------------------------
     try:
-        n_obs, n_param = Gm.shape
+        # Select only valid interferogram observations.
+        # Exclude all NSBAS pseudo-observation rows.
 
-        # Weighted residuals
-        r = dm - Gm @ X
-        dof = max(n_obs - n_param, 1)
-        sigma0_sq = (r @ r) / dof
+        ifg_mask = m[:n_ifg]
 
-        # Parameter covariance
-        GTG = Gm.T @ Gm
-        Cx = np.linalg.pinv(GTG, rcond=1e-10)
-        Cx *= sigma0_sq
+        G_ifg = np.asarray(
+            Gall[:n_ifg][ifg_mask],
+            dtype=np.float64
+        )
 
-        # Displacement increment covariance
+        if use_weights:
+            var_ifg = variance[:n_ifg][ifg_mask]
+
+            if (
+                not np.all(np.isfinite(var_ifg))
+                or np.any(var_ifg <= 0)
+            ):
+                raise ValueError(
+                    "Invalid interferogram variances"
+                )
+
+            G_ifg_w = (
+                G_ifg / np.sqrt(var_ifg)[:, np.newaxis]
+            )
+
+        else:
+            # Unit observation variance for unweighted LS.
+            G_ifg_w = G_ifg
+
+        # H includes both interferograms and NSBAS constraints.
+        H = Gm.T @ Gm
+
+        # B contains only the interferogram information.
+        B = G_ifg_w.T @ G_ifg_w
+
+        # Use a pseudoinverse of Gm rather than forming
+        # a pseudoinverse of H directly, to avoid squaring
+        # the numerical condition number in the SVD cutoff.
+        Gpinv = np.linalg.pinv(Gm, rcond=1e-10)
+
+        Hinv = Gpinv @ Gpinv.T
+
+        # Sampling covariance of the regularised estimator.
+        Cx = Hinv @ B @ Hinv
+
+        # Numerical symmetry.
+        Cx = 0.5 * (Cx + Cx.T)
+
+        # --------------------------------------------------
+        # 3. Displacement increment covariance
+        # --------------------------------------------------
         Cm = Cx[:n_inc, :n_inc]
 
-        # Propagate to cumulative displacement
-        A = np.tril(np.ones((n_inc, n_inc), dtype=np.float64))
+        # --------------------------------------------------
+        # 4. Propagate increments to cumulative displacement
+        # --------------------------------------------------
+        A = np.tril(
+            np.ones((n_inc, n_inc), dtype=np.float64)
+        )
 
-        # Identify increments not spanned by interferograms
-        n_im = n_inc + 1
-        n_ifg = Gall.shape[0] - n_im
+        # Preserve existing global gap handling.
         G_inc = Gall[:n_ifg, :n_inc]
 
         gap_mask = np.all(G_inc == 0, axis=0)
+
         A[:, gap_mask] = 0
 
         Cu = A @ Cm @ A.T
-        ts_std = np.sqrt(np.maximum(np.diag(Cu), 0))
-        # Replace the previous sampled-pixel diagnostic block with this block.
-        # Insert immediately after ts_std = np.sqrt(...) in the uncertainty try block.
-        # Move old tsstd_matrix_diagnostics_*.csv files out of the way first.
-        if np.all(np.isfinite(ts_std)) and np.any(ts_std > 0):
-            peak_std = float(np.max(ts_std))
-            if (i % 500 == 0) and (2 <= peak_std <= 10 or peak_std >= 1000):
-                import os
-                singular = np.linalg.svd(Gm, compute_uv=False)
-                condition = float(singular[0] / singular[-1]) if singular[-1] > 0 else float('inf')
-                rank = int(np.linalg.matrix_rank(Gm))
-                applied_w = np.asarray(w[m], dtype=float) if use_weights else np.ones(Gm.shape[0])
-                finite_w = applied_w[np.isfinite(applied_w) & (applied_w > 0)]
-                w_min = float(np.min(finite_w)) if finite_w.size else float('nan')
-                w_max = float(np.max(finite_w)) if finite_w.size else float('nan')
-                Gpinv = np.linalg.pinv(Gm, rcond=1e-10)
-                Cx_svd = (Gpinv @ Gpinv.T) * sigma0_sq
-                Cm_svd = Cx_svd[:n_inc, :n_inc]
-                Cu_svd = A @ Cm_svd @ A.T
-                rank_svd_cutoff = int(np.sum(singular > 1e-10 * singular[0]))
-                rank_normal_cutoff = int(np.sum(singular**2 > 1e-10 * singular[0]**2))
-                diagnostic_path = f'tsstd_matrix_diagnostics_{os.getpid()}.csv'
-                header = ('pixel,max_tsstd_mm,sigma0_sq,smax,smin,condition,rank,'
-                        'n_param,n_obs,max_cx_diag,max_cm_diag,max_cu_diag,w_min,w_max,'
-                        'max_cm_diag_svd,max_cu_diag_svd,rank_svd_cutoff,rank_normal_cutoff\n')
-                if not os.path.exists(diagnostic_path):
-                    with open(diagnostic_path, 'w') as fh:
-                        fh.write(header)
-                with open(diagnostic_path, 'a') as fh:
-                    fh.write(f'{i},{peak_std},{sigma0_sq},{singular[0]},{singular[-1]},'
-                            f'{condition},{rank},{n_param},{n_obs},'
-                            f'{np.max(np.diag(Cx))},{np.max(np.diag(Cm))},'
-                            f'{np.max(np.diag(Cu))},{w_min},{w_max},'
-                            f'{np.max(np.diag(Cm_svd))},{np.max(np.diag(Cu_svd))},'
-                            f'{rank_svd_cutoff},{rank_normal_cutoff}\n')
+
+        ts_std = np.sqrt(
+            np.maximum(np.diag(Cu), 0)
+        ).astype(np.float32)
+
     except Exception as e:
         if i < 10 or i % 10000 == 0:
             print(
-                f"Uncertainty/diagnostic failed at pixel {i}: {e}",
+                f"Uncertainty failed at pixel {i}: {e}",
                 flush=True
             )
 
     return X, ts_std
-
-
-
 '''
 # Weight matrix (diagonal)
 W = np.diag(1.0 / var)

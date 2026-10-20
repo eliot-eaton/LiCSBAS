@@ -125,6 +125,35 @@ def main():
                 path3 = out / 'tsstd_matrix_diagnostics.png'
                 fig.savefig(path3, dpi=200)
                 plt.close(fig)
+                # Additional covariance / weighting diagnostics (new CSV schema).
+                extra_fields = [
+                    ('smin', 'Smallest singular value'),
+                    ('max_cm_diag', 'Maximum increment variance (mm²)'),
+                    ('max_cu_diag', 'Maximum cumulative variance (mm²)'),
+                    ('w_min', 'Minimum applied weight'),
+                    ('w_max', 'Maximum applied weight'),
+                ]
+                available = [(field, label) for field, label in extra_fields if field in diag.dtype.names]
+                if available:
+                    fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
+                    for ax, (field, label) in zip(axes.flat, available):
+                        x = diag['max_tsstd_mm']
+                        y = diag[field]
+                        ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+                        ax.scatter(x[ok], y[ok], s=15, alpha=0.5)
+                        ax.set_xscale('log')
+                        ax.set_yscale('log')
+                        ax.set_xlabel('Maximum pixel tsstd (mm)')
+                        ax.set_ylabel(label)
+                        ax.grid(alpha=0.3)
+                    for ax in list(axes.flat)[len(available):]:
+                        ax.set_visible(False)
+                    extra_path = out / 'tsstd_covariance_diagnostics.png'
+                    fig.savefig(extra_path, dpi=200)
+                    plt.close(fig)
+                    print(f'Saved {extra_path}')
+                else:
+                    print('Existing CSVs lack new covariance/weight columns; rerun Step 13 with updated snippet.')
                 print(f'Saved {path3} from {len(diag)} sampled pixels')
                 for label, selector in [
                     ('Ordinary uncertainty (2-10 mm)', (diag['max_tsstd_mm'] >= 2) & (diag['max_tsstd_mm'] <= 10)),
@@ -133,6 +162,11 @@ def main():
                     group = diag[selector]
                     if len(group):
                         print(f"{label}: n={len(group)}, median sigma0_sq={np.median(group['sigma0_sq']):.4g}, median condition={np.median(group['condition']):.4g}, median rank={np.median(group['rank']):.0f}/{np.median(group['n_param']):.0f}")
+                        for field, title in available:
+                            vals = group[field]
+                            vals = vals[np.isfinite(vals)]
+                            if len(vals):
+                                print(f'  median {title}: {np.median(vals):.6g}')
     else:
         print('No matrix diagnostic CSVs found; matrix comparison skipped.')
         print('To produce them, instrument wls_nsbas_with_error() and rerun inversion.')

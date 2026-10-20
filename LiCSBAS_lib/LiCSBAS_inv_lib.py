@@ -823,23 +823,32 @@ def wls_nsbas_with_error(i, use_weights=True):
     # Record weighted design matrix Gm or the residual variance factor. 
     # So we can plot these quantities and  analyse them
     # Writes a small sample per worker, avoiding shared-file writes.
+    # This only samples 1/500 pixels and writes one CSV per worker PID.
+
     if np.all(np.isfinite(ts_std)) and np.any(ts_std > 0):
         peak_std = float(np.max(ts_std))
-        # Deterministic sampling to limit I/O; adjust modulus if needed.
         if (i % 500 == 0) and (2 <= peak_std <= 10 or peak_std >= 1000):
+            import os
             singular = np.linalg.svd(Gm, compute_uv=False)
-            positive = singular[singular > 0]
             condition = (float(singular[0] / singular[-1])
                         if singular[-1] > 0 else float('inf'))
             rank = int(np.linalg.matrix_rank(Gm))
-            import os
+            # Actual applied weights on rows included in the inversion.
+            applied_w = np.asarray(w[m], dtype=float) if use_weights else np.ones(Gm.shape[0])
+            finite_w = applied_w[np.isfinite(applied_w) & (applied_w > 0)]
+            w_min = float(np.min(finite_w)) if finite_w.size else float('nan')
+            w_max = float(np.max(finite_w)) if finite_w.size else float('nan')
             diagnostic_path = f'tsstd_matrix_diagnostics_{os.getpid()}.csv'
+            header = ('pixel,max_tsstd_mm,sigma0_sq,smax,smin,condition,rank,'
+                    'n_param,n_obs,max_cx_diag,max_cm_diag,max_cu_diag,w_min,w_max\n')
             if not os.path.exists(diagnostic_path):
                 with open(diagnostic_path, 'w') as fh:
-                    fh.write('pixel,max_tsstd_mm,sigma0_sq,smax,smin,condition,rank,n_param,n_obs,max_cx_diag\n')
+                    fh.write(header)
             with open(diagnostic_path, 'a') as fh:
                 fh.write(f'{i},{peak_std},{sigma0_sq},{singular[0]},{singular[-1]},'
-                        f'{condition},{rank},{n_param},{n_obs},{np.max(np.diag(Cx))}\n')
+                        f'{condition},{rank},{n_param},{n_obs},'
+                        f'{np.max(np.diag(Cx))},{np.max(np.diag(Cm))},'
+                        f'{np.max(np.diag(Cu))},{w_min},{w_max}\n')
 
     return X, ts_std
 

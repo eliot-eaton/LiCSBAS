@@ -207,7 +207,7 @@ def main():
 
     save_image(mask, results / 'mask.png', 'Step 15 mask (1=kept)', lo=0, hi=1)
     save_image(masked_vel, Path(str(vel_path) + '.mskd.png'), 'Masked velocity (mm/year)', cmap='RdBu_r', lo=args.vmin, hi=args.vmax)
-    save_image(quality, results / 'quality_score.png', 'Quality score (higher is better)', lo=0, hi=1)
+    save_image(quality, results / 'quality_score.png', 'Quality score (higher is better)', lo=0, hi=0.5)
     save_image(drel, results / 'displacement_relative.png', 'Relative net cumulative displacement (mm)', cmap='RdBu_r')
 
     # Diagnostics: original, masked velocity, mask, quality + all existing indices.
@@ -223,7 +223,7 @@ def main():
             cmap = 'RdBu_r' if name.startswith('vel') else 'viridis'
             im = ax.imshow(display, cmap=cmap, interpolation='nearest',
                            vmin=0 if name in ('mask','quality_score') else None,
-                           vmax=1 if name in ('mask','quality_score') else None)
+                           vmax=0.5 if name in ('mask','quality_score') else None)
             ax.set_title(name, fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
